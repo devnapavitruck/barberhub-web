@@ -1,0 +1,157 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider          = "mysql"
+  url               = env("DATABASE_URL")
+  shadowDatabaseUrl = env("SHADOW_DATABASE_URL")
+}
+
+model Usuario {
+  id                 Int            @id @default(autoincrement())
+  email              String         @unique
+  password           String
+  rol                Rol
+  emailVerified      Boolean        @default(false)
+  createdAt          DateTime       @default(now())
+  favoritosRecibidos Favorito[]     @relation("BarberoFavoritos")
+  favoritos          Favorito[]     @relation("ClienteFavoritos")
+  barberoPerfil      PerfilBarbero?
+  clientePerfil      PerfilCliente?
+  reservasBarbero    Reserva[]      @relation("BarberoReservas")
+  reservasCliente    Reserva[]      @relation("ClienteReservas")
+}
+
+model PerfilCliente {
+  id         Int      @id @default(autoincrement())
+  usuarioId  Int      @unique
+  avatarUrl  String?
+  nombres    String
+  apellidos  String
+  telefono   String
+  ciudad     String
+  nacimiento DateTime?
+  region     String?
+  comuna     String?
+  usuario    Usuario  @relation(fields: [usuarioId], references: [id])
+}
+
+model PerfilBarbero {
+  id              Int        @id @default(autoincrement())
+  usuarioId       Int        @unique
+  avatarUrl       String?
+  nombres         String
+  apellidos       String
+  telefono        String
+  nacimiento      DateTime
+  nombreBarberia  String
+  descripcion     String
+  experiencia     Int
+  region          String
+  comuna          String
+  ciudad          String
+  direccion       String
+  redesSociales   String?    @db.LongText
+  especialidades  String     @db.LongText
+  certificaciones String?
+  idiomas         String     @db.LongText
+  metodosPago     String?    @db.LongText
+  politicasCancel String?
+  mostrarConteo   Boolean    @default(true)
+  galeria         Galeria[]  @relation("BarberoGaleria")
+  horarios        Horario[]  @relation("BarberoHorarios")
+  usuario         Usuario    @relation(fields: [usuarioId], references: [id])
+  servicios       Servicio[] @relation("BarberoServicios")
+}
+
+model Servicio {
+  id        Int           @id @default(autoincrement())
+  barberoId Int
+  nombre    String
+  duracion  Int
+  precio    Int
+  reservas  Reserva[]
+  barbero   PerfilBarbero @relation("BarberoServicios", fields: [barberoId], references: [id])
+
+  @@index([barberoId], map: "Servicio_barberoId_fkey")
+}
+
+model Horario {
+  id          Int           @id @default(autoincrement())
+  barberoId   Int
+  dia         String
+  inicio      String
+  fin         String
+  pausaInicio String?
+  pausaFin    String?
+  barbero     PerfilBarbero @relation("BarberoHorarios", fields: [barberoId], references: [id])
+
+  @@index([barberoId], map: "Horario_barberoId_fkey")
+}
+
+enum Estado {
+  PENDING // reserva creada pero no aceptada aún
+  CONFIRMED // el barbero aceptó la reserva
+  CANCELLED // cancelada por cliente o barbero
+}
+
+model Reserva {
+  id           Int       @id @default(autoincrement())
+  clienteId    Int
+  barberoId    Int
+  servicioId   Int
+  fecha        DateTime
+  hora         String
+  notas        String? // peticiones adicionales del cliente
+  estado       Estado    @default(PENDING)
+  motivoCancel String?   @map("motivo_cancelación")
+  completadaAt DateTime? @map("completada_at")
+
+  barbero  Usuario  @relation("BarberoReservas", fields: [barberoId], references: [id])
+  cliente  Usuario  @relation("ClienteReservas", fields: [clienteId], references: [id])
+  servicio Servicio @relation(fields: [servicioId], references: [id])
+
+  // Relación 1:1 con Valoracion
+  valoracion Valoracion? @relation("ReservaValoracion")
+
+  @@index([barberoId], map: "Reserva_barberoId_fkey")
+  @@index([clienteId], map: "Reserva_clienteId_fkey")
+  @@index([servicioId], map: "Reserva_servicioId_fkey")
+}
+
+model Valoracion {
+  id        Int      @id @default(autoincrement())
+  reservaId Int      @unique
+  tijeras   Int
+  resena    String?
+  createdAt DateTime @default(now())
+
+  // Relación inversa con Reserva
+  reserva Reserva @relation("ReservaValoracion", fields: [reservaId], references: [id])
+}
+
+model Favorito {
+  id        Int     @id @default(autoincrement())
+  clienteId Int
+  barberoId Int
+  barbero   Usuario @relation("BarberoFavoritos", fields: [barberoId], references: [id])
+  cliente   Usuario @relation("ClienteFavoritos", fields: [clienteId], references: [id])
+
+  @@index([barberoId], map: "Favorito_barberoId_fkey")
+  @@index([clienteId], map: "Favorito_clienteId_fkey")
+}
+
+model Galeria {
+  id        Int           @id @default(autoincrement())
+  barberoId Int
+  url       String
+  barbero   PerfilBarbero @relation("BarberoGaleria", fields: [barberoId], references: [id])
+
+  @@index([barberoId], map: "Galeria_barberoId_fkey")
+}
+
+enum Rol {
+  CLIENTE
+  BARBERO
+}
