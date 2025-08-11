@@ -33,6 +33,7 @@ interface PublicProfileProps {
   city: string
   servicios: Servicio[]
   horarios: Horario[]
+  phone?: string             // <-- NUEVO
 }
 
 const BarberoPublicPage: NextPage<PublicProfileProps> = ({
@@ -41,6 +42,7 @@ const BarberoPublicPage: NextPage<PublicProfileProps> = ({
   city,
   servicios: serviciosSSR,
   horarios,
+  phone, // <-- NUEVO
 }) => {
   const theme = useTheme()
   const router = useRouter()
@@ -142,6 +144,19 @@ const BarberoPublicPage: NextPage<PublicProfileProps> = ({
         <Typography variant="subtitle1" sx={{ color: 'text.secondary', mb: 2 }}>
           {city}
         </Typography>
+
+        {/* Teléfono público del barbero */}
+        {phone ? (
+          <Box sx={{ display: 'flex', justifyContent: 'center', mb: 2 }}>
+            <Button
+              href={`tel:${phone.replace(/\s+/g, '')}`}
+              variant="outlined"
+              sx={{ textTransform: 'none', borderRadius: 8 }}
+            >
+              Llamar {phone}
+            </Button>
+          </Box>
+        ) : null}
 
         {/* Acciones: Cliente vs Barbero */}
         {isMine ? (
@@ -340,14 +355,14 @@ export const getServerSideProps: GetServerSideProps<PublicProfileProps> = async 
   // 1) intenta por PerfilBarbero.id
   let perfil = await prisma.perfilBarbero.findUnique({
     where: { id: param },
-    select: { id: true, usuarioId: true, nombres: true, apellidos: true, ciudad: true },
+    select: { id: true, usuarioId: true, nombres: true, apellidos: true, ciudad: true, telefono: true }, // <-- tel
   })
 
   // 2) si no existe, intenta por usuarioId
   if (!perfil) {
     perfil = await prisma.perfilBarbero.findUnique({
       where: { usuarioId: param },
-      select: { id: true, usuarioId: true, nombres: true, apellidos: true, ciudad: true },
+      select: { id: true, usuarioId: true, nombres: true, apellidos: true, ciudad: true, telefono: true }, // <-- tel
     })
   }
 
@@ -386,6 +401,7 @@ export const getServerSideProps: GetServerSideProps<PublicProfileProps> = async 
       city: perfil.ciudad || 'Ciudad',
       servicios,
       horarios,
+      phone: perfil.telefono || '', // <-- NUEVO
     },
   }
 }
