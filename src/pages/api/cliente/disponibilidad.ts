@@ -33,16 +33,20 @@ const fromMinutes = (mins: number) => {
   return `${h}:${m}`
 }
 
-// ——— endpoint ———
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== 'GET') return res.status(405).json({ error: 'Sólo GET' })
 
   try {
-    const barberoId = Number(req.query.barberoId)
+    // Soporta:
+    // - barberoId (id de PerfilBarbero)  [requerido]
+    // - barberoUserId (id de Usuario del barbero) [opcional]
+    // - servicioId (para tomar su duración)      [requerido]
+    // - fecha YYYY-MM-DD                          [requerido]
+    const barberoPerfilId = Number(req.query.barberoId)
     const servicioId = Number(req.query.servicioId)
     const fechaStr = String(req.query.fecha || '') // YYYY-MM-DD
 
-    if (!Number.isFinite(barberoId) || barberoId <= 0)
+    if (!Number.isFinite(barberoPerfilId) || barberoPerfilId <= 0)
       return res.status(400).json({ error: 'barberoId inválido' })
     if (!Number.isFinite(servicioId) || servicioId <= 0)
       return res.status(400).json({ error: 'servicioId inválido' })
@@ -60,25 +64,40 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       select: { id: true, duracion: true, barberoId: true },
     })
     if (!servicio) return res.status(404).json({ error: 'Servicio no existe' })
-    if (servicio.barberoId !== barberoId)
+    if (servicio.barberoId !== barberoPerfilId)
       return res.status(400).json({ error: 'Servicio no corresponde al barbero' })
 
     const duracion = servicio.duracion // en minutos (30/60/90)
 
-    // Horario del día
+    // Resolver userId del barbero (para filtrar reservas)
+    let barberoUserId: number | null = null
+    if (req.query.barberoUserId) {
+      const v = Number(req.query.barberoUserId)
+      if (Number.isFinite(v) && v > 0) barberoUserId = v
+    }
+    if (!barberoUserId) {
+      const perfil = await prisma.perfilBarbero.findUnique({
+        where: { id: barberoPerfilId },
+        select: { usuarioId: true },
+      })
+      if (!perfil) return res.status(404).json({ error: 'Perfil de barbero no encontrado' })
+      barberoUserId = perfil.usuarioId
+    }
+
+    // Horario del día (según nombre corto)
     const dia: Dia = IDX_TO_DIA[targetDate.getDay()]
     const horario = await prisma.horario.findFirst({
-      where: { barberoId, dia },
+      where: { barberoId: barberoPerfilId, dia },
       select: { inicio: true, fin: true, pausaInicio: true, pausaFin: true } as any,
     })
     if (!horario || !horario.inicio || !horario.fin) {
-      return res.status(200).json({ slots: [], stepMin: 30, duracion })
+      return res.status(200).json({ slots: [], disponibles: [], horas: [], stepMin: 30, duracion })
     }
 
     const hInicio = toMinutes(horario.inicio)
     const hFin = toMinutes(horario.fin)
     if (!(hInicio < hFin)) {
-      return res.status(200).json({ slots: [], stepMin: 30, duracion })
+      return res.status(200).json({ slots: [], disponibles: [], horas: [], stepMin: 30, duracion })
     }
 
     // Pausa (si existe)
@@ -86,12 +105,12 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const p1 = hasPausa ? toMinutes(horario.pausaInicio as string) : null
     const p2 = hasPausa ? toMinutes(horario.pausaFin as string) : null
 
-    // Reservas del día (PENDING o CONFIRMED) del barbero
+    // Reservas del día (PENDING o CONFIRMED) del barbero (¡OJO!: aquí va el userId)
     const dayStart = startOfDay(targetDate)
     const dayEnd = endOfDay(targetDate)
     const reservas = await prisma.reserva.findMany({
       where: {
-        barberoId,
+        barberoId: barberoUserId!, // <- usuario del barbero
         fecha: { gte: dayStart, lte: dayEnd },
         estado: { in: ['PENDING', 'CONFIRMED'] },
       },
@@ -142,6 +161,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
     return res.status(200).json({
       slots: candidates,
+      disponibles: candidates, // alias para compatibilidad
+      horas: candidates,       // alias para compatibilidad
       stepMin: STEP,
       duracion,
     })
