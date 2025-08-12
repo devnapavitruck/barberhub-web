@@ -1,5 +1,5 @@
 // src/pages/barbero/[id].tsx
-import React, { useEffect, useMemo, useState } from 'react'
+import React, { useEffect, useState } from 'react'
 import { GetServerSideProps, NextPage } from 'next'
 import { useRouter } from 'next/router'
 import {
@@ -16,6 +16,7 @@ import {
   TextField,
   MenuItem,
   InputAdornment,
+  Rating,
 } from '@mui/material'
 import prisma from '@/lib/prisma'
 import PublicLayout from '@/components/PublicLayout'
@@ -26,28 +27,33 @@ import { useFavoritos } from '@/hooks/useFavoritos'
 
 type Servicio = { id: number; nombre: string; precio: number; duracion: number; descripcion?: string }
 type Horario  = { id: number; dia: string; inicio: string; fin: string }
+type RatingInfo = { avg: number; count: number }
 
 interface PublicProfileProps {
-  barberoId: number          // <-- id de PERFIL (no usuario)
+  barberoId: number          // id de PERFIL
+  barberoUserId: number      // id de USUARIO del barbero (para rating)
   barberoName: string
   city: string
   servicios: Servicio[]
   horarios: Horario[]
+  phone?: string
+  rating?: RatingInfo
 }
 
 const BarberoPublicPage: NextPage<PublicProfileProps> = ({
   barberoId,
+  barberoUserId,
   barberoName,
   city,
   servicios: serviciosSSR,
   horarios,
+  phone,
+  rating,
 }) => {
   const theme = useTheme()
   const router = useRouter()
 
-  // ¿Es mi propio perfil?
   const [isMine, setIsMine] = useState(false)
-  // userId de cliente (para reservar)
   const [clienteUserId, setClienteUserId] = useState<number | null>(null)
 
   useEffect(() => {
@@ -62,19 +68,19 @@ const BarberoPublicPage: NextPage<PublicProfileProps> = ({
     }
   }, [barberoId])
 
-  // Favoritos (usa ids de PERFIL)
+  // Favoritos
   const { isFavorite, toggleFavorite, isToggling } = useFavoritos(barberoId)
 
-  // Abrir modal de reserva por query (?reserve=true)
+  // Reserva por query
   const [reserveOpen, setReserveOpen] = useState(false)
   useEffect(() => {
     if (!isMine && router.query.reserve === 'true') setReserveOpen(true)
   }, [router.query.reserve, isMine])
 
-  // Servicios en estado para refrescar sin recargar
+  // Servicios en estado
   const [servicios, setServicios] = useState<Servicio[]>(serviciosSSR)
 
-  // Modal “Agregar servicio” (barbero dueño)
+  // Modal “Agregar servicio”
   const [svcOpen, setSvcOpen] = useState(false)
   const [svcNombre, setSvcNombre] = useState('')
   const [svcDescripcion, setSvcDescripcion] = useState('')
@@ -98,11 +104,10 @@ const BarberoPublicPage: NextPage<PublicProfileProps> = ({
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         body: JSON.stringify({
-          barberoId, // id de PERFIL
+          barberoId,
           nombre: svcNombre,
           precio: Number(svcPrecio),
           duracion: Number(svcDuracion),
-          // descripcion: svcDescripcion, // descomenta cuando el backend la soporte
         }),
       })
       if (!res.ok) throw new Error('No se pudo crear el servicio')
@@ -119,6 +124,53 @@ const BarberoPublicPage: NextPage<PublicProfileProps> = ({
       setSvcSaving(false)
     }
   }
+
+  // ---------- Rating (promedio + mío) ----------
+  const [avg, setAvg] = useState<number>(rating?.avg ?? 0)
+  const [count, setCount] = useState<number>(rating?.count ?? 0)
+  const [myRating, setMyRating] = useState<number | null>(null)
+  const [savingRate, setSavingRate] = useState(false)
+
+  // Trae mi rating (si soy cliente) y refresca agregados
+  useEffect(() => {
+    if (!clienteUserId) return
+    const url = `/api/ratings?barberoUserId=${barberoUserId}&clienteUserId=${clienteUserId}`
+    fetch(url)
+      .then(r => r.ok ? r.json() : null)
+      .then((data) => {
+        if (!data) return
+        if (typeof data.mine === 'number') setMyRating(data.mine)
+        if (typeof data.avg === 'number') setAvg(data.avg)
+        if (typeof data.count === 'number') setCount(data.count)
+      })
+      .catch(() => {})
+  }, [clienteUserId, barberoUserId])
+
+  const handleChangeRating = async (_: any, value: number | null) => {
+    if (!clienteUserId || !value) return
+    setSavingRate(true)
+    try {
+      const res = await fetch('/api/ratings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          barberoUserId,
+          clienteUserId,
+          estrellas: value,
+        }),
+      })
+      if (res.ok) {
+        setMyRating(value)
+        // refresca agregados
+        const r = await fetch(`/api/ratings?barberoUserId=${barberoUserId}`)
+        const agg = await r.json()
+        setAvg(agg.avg ?? value)
+        setCount(agg.count ?? count)
+      }
+    } catch {}
+    finally { setSavingRate(false) }
+  }
+  // ---------------------------------------------
 
   return (
     <PublicLayout>
@@ -142,6 +194,36 @@ const BarberoPublicPage: NextPage<PublicProfileProps> = ({
         <Typography variant="subtitle1" sx={{ color: 'text.secondary', mb: 2 }}>
           {city}
         </Typography>
+
+        {/* Teléfono */}
+        {phone ? (
+          <Box sx={{ display: 'flex', justifyContent: 'center', mb: 1.5 }}>
+            <Button
+              href={`tel:${phone.replace(/\s+/g, '')}`}
+              variant="outlined"
+              sx={{ textTransform: 'none', borderRadius: 8 }}
+            >
+              Llamar {phone}
+            </Button>
+          </Box>
+        ) : null}
+
+        {/* Rating (promedio siempre visible; editable para clientes) */}
+        {count > 0 || clienteUserId ? (
+          <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 1, mb: 2 }}>
+            <Rating
+              value={clienteUserId ? (myRating ?? 0) : Number(avg)}
+              precision={0.5}
+              readOnly={!clienteUserId || savingRate}
+              onChange={handleChangeRating}
+            />
+            <Typography variant="body2" sx={{ color: 'text.secondary' }}>
+              {count > 0 ? `(${count})` : '(sé el primero)'}
+            </Typography>
+          </Box>
+        ) : (
+          <Typography sx={{ color: '#9aa0a6', mb: 2 }}>Sin valoraciones aún</Typography>
+        )}
 
         {/* Acciones: Cliente vs Barbero */}
         {isMine ? (
@@ -271,7 +353,7 @@ const BarberoPublicPage: NextPage<PublicProfileProps> = ({
         <ReserveModal
           open={reserveOpen}
           onClose={() => setReserveOpen(false)}
-          barberoId={barberoId}        // id de PERFIL
+          barberoId={barberoId}
           userId={clienteUserId ?? 0}
           servicios={servicios}
         />
@@ -334,33 +416,21 @@ const BarberoPublicPage: NextPage<PublicProfileProps> = ({
 }
 
 export const getServerSideProps: GetServerSideProps<PublicProfileProps> = async ({ params }) => {
-  // El parámetro puede llegar como PerfilBarbero.id o como usuarioId
   const param = Number(params?.id)
 
-  // 1) intenta por PerfilBarbero.id
+  // Perfil por id de perfil o por usuarioId
   let perfil = await prisma.perfilBarbero.findUnique({
     where: { id: param },
-    select: { id: true, usuarioId: true, nombres: true, apellidos: true, ciudad: true },
+    select: { id: true, usuarioId: true, nombres: true, apellidos: true, ciudad: true, telefono: true },
   })
-
-  // 2) si no existe, intenta por usuarioId
   if (!perfil) {
     perfil = await prisma.perfilBarbero.findUnique({
       where: { usuarioId: param },
-      select: { id: true, usuarioId: true, nombres: true, apellidos: true, ciudad: true },
+      select: { id: true, usuarioId: true, nombres: true, apellidos: true, ciudad: true, telefono: true },
     })
   }
-
   if (!perfil) {
-    return {
-      props: {
-        barberoId: 0,
-        barberoName: 'Barbero Desconocido',
-        city: 'Ciudad',
-        servicios: [],
-        horarios: [],
-      },
-    }
+    return { props: { barberoId: 0, barberoUserId: 0, barberoName: 'Barbero Desconocido', city: 'Ciudad', servicios: [], horarios: [] } }
   }
 
   const perfilId = perfil.id
@@ -379,13 +449,28 @@ export const getServerSideProps: GetServerSideProps<PublicProfileProps> = async 
     take: 30,
   })
 
+  // promedio y cantidad desde tabla auxiliar ratings_barbero
+  const agg = await prisma.$queryRaw<{ avg: number | null; count: bigint }[]>`
+    SELECT AVG(estrellas) AS avg, COUNT(*) AS count
+    FROM ratings_barbero
+    WHERE barbero_usuario_id = ${perfil.usuarioId}
+  `
+  const row = agg?.[0]
+  const rating: RatingInfo = {
+    avg: Number(row?.avg ?? 0),
+    count: Number(row?.count ?? 0),
+  }
+
   return {
     props: {
       barberoId: perfilId,
+      barberoUserId: perfil.usuarioId,
       barberoName: `${perfil.nombres} ${perfil.apellidos}`.trim() || 'Barbero',
       city: perfil.ciudad || 'Ciudad',
       servicios,
       horarios,
+      phone: perfil.telefono || '',
+      rating,
     },
   }
 }

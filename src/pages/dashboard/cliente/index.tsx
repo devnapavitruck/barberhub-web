@@ -1,5 +1,5 @@
 // src/pages/dashboard/cliente/index.tsx
-import React, { useMemo, useState } from 'react'
+import React, { useEffect, useMemo, useState } from 'react'
 import { useRouter } from 'next/router'
 import {
   Box,
@@ -19,11 +19,16 @@ type BarberCardProps = {
   id: number
   nombre: string
   rating?: number
+  count?: number
   action: 'reservar' | 'perfil'
   onClick: (id: number) => void
+  debugInfo?: string
+  debug?: boolean
 }
 
-function BarberCard({ id, nombre, rating = 0, action, onClick }: BarberCardProps) {
+function BarberCard({
+  id, nombre, rating = 0, count = 0, action, onClick, debugInfo, debug,
+}: BarberCardProps) {
   const theme = useTheme()
   return (
     <Card
@@ -38,7 +43,6 @@ function BarberCard({ id, nombre, rating = 0, action, onClick }: BarberCardProps
         mx: 'auto',
       }}
     >
-      {/* AVATAR */}
       <Avatar
         sx={{
           bgcolor: theme.palette.primary.main,
@@ -52,7 +56,6 @@ function BarberCard({ id, nombre, rating = 0, action, onClick }: BarberCardProps
         {nombre.charAt(0)}
       </Avatar>
 
-      {/* NOMBRE */}
       <Typography
         sx={{
           color: '#FFF',
@@ -69,21 +72,25 @@ function BarberCard({ id, nombre, rating = 0, action, onClick }: BarberCardProps
         {nombre}
       </Typography>
 
-      {/* ESTRELLAS — mantén inline-flex para que queden en UNA línea */}
-      <Rating
-        value={rating}
-        precision={0.5}
-        readOnly
-        size="small"
-        sx={{
-          display: 'inline-flex',
-          color: theme.palette.primary.main,
-          fontSize: 18,
-          mb: 1.25,
-        }}
-      />
+      <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 0.5, mb: 1.25 }}>
+        <Rating
+          value={rating}
+          precision={0.5}
+          readOnly
+          size="small"
+          sx={{ display: 'inline-flex', color: theme.palette.primary.main, fontSize: 18 }}
+        />
+        <Typography variant="caption" sx={{ color: '#bbb' }}>
+          ({count})
+        </Typography>
+      </Box>
 
-      {/* ACCIÓN ABAJO como BLOQUE */}
+      {debug && (
+        <Typography variant="caption" sx={{ color: '#777', display: 'block', mb: 1 }}>
+          {debugInfo}
+        </Typography>
+      )}
+
       {action === 'perfil' ? (
         <Button
           variant="outlined"
@@ -120,13 +127,48 @@ function BarberCard({ id, nombre, rating = 0, action, onClick }: BarberCardProps
   )
 }
 
-
 export default function ClienteDashboard() {
   const theme = useTheme()
   const router = useRouter()
+  const debug = typeof router.query.debug !== 'undefined'
 
-  // --- Mis Favoritos (datos completos) ---
+  // --- Mis Favoritos ---
   const { favoritos: favCards = [], isLoading: favLoading } = useFavoritosFull()
+
+  // Mapas ratings (favoritos y disponibles)
+  const [ratingsFav, setRatingsFav] = useState<Record<number, { avg: number; count: number }>>({})
+  const [ratingsAvailByPerfil, setRatingsAvailByPerfil] = useState<Record<number, { avg: number; count: number }>>({})
+  const [ratingsAvailByUser, setRatingsAvailByUser] = useState<Record<number, { avg: number; count: number }>>({})
+  // Fallback per-card (por userId) para visibles
+  const [ratingsPerCard, setRatingsPerCard] = useState<Record<number, { avg: number; count: number }>>({})
+
+  // Ratings Favoritos por perfilId (lote)
+  useEffect(() => {
+    if (!favCards?.length) {
+      setRatingsFav({})
+      return
+    }
+    const perfilIds = favCards.map(f => f.id).filter(Boolean)
+    if (!perfilIds.length) return
+
+    const qs = encodeURI(perfilIds.join(','))
+    fetch(`/api/ratings/bulk?perfilIds=${qs}`)
+      .then(r => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (!data) return
+        const byPerfil: Record<number, { avg: number; count: number }> = {}
+        const mapPU: Record<number, number> = data.mapPerfilToUser || {}
+        const items: Array<{ barberoUserId: number; avg: number; count: number }> = data.items || []
+        const byUser: Record<number, { avg: number; count: number }> = {}
+        for (const it of items) byUser[it.barberoUserId] = { avg: Number(it.avg || 0), count: Number(it.count || 0) }
+        for (const [perfilIdStr, userId] of Object.entries(mapPU)) {
+          const perfilId = Number(perfilIdStr)
+          if (byUser[userId]) byPerfil[perfilId] = byUser[userId]
+        }
+        setRatingsFav(byPerfil)
+      })
+      .catch(() => {})
+  }, [favCards])
 
   // --- Barberos Disponibles ---
   const { data: barberos = [], isLoading: barLoading } = useQuery<any[], Error>({
@@ -139,10 +181,132 @@ export default function ClienteDashboard() {
     staleTime: 60_000,
   })
 
-  // Paginación/progresivo (10 por tanda)
+  // Lote por perfilId y por userId
+  useEffect(() => {
+    if (!barberos?.length) {
+      setRatingsAvailByPerfil({})
+      setRatingsAvailByUser({})
+      return
+    }
+
+    const perfilIds = Array.from(new Set(
+      barberos
+        .map((b: any) =>
+          b.perfilId ?? b.perfil_id ?? b.id_perfil ?? b.barberoId ?? b.id
+        )
+        .filter((x: any) => Number.isFinite(Number(x)))
+        .map(Number)
+    ))
+
+    const userIds = Array.from(new Set(
+      barberos
+        .map((b: any) =>
+          b.usuarioId ??
+          b.userId ??
+          b.barberoUserId ??
+          b.user_id ??
+          b.barbero_id ??
+          b.barbero?.usuarioId ??
+          b.barbero?.id ??
+          b.ownerId ??
+          b.id
+        )
+        .filter((x: any) => Number.isFinite(Number(x)))
+        .map(Number)
+    ))
+
+    const fetchPerfil = perfilIds.length
+      ? fetch(`/api/ratings/bulk?perfilIds=${encodeURI(perfilIds.join(','))}`).then(r => (r.ok ? r.json() : null))
+      : Promise.resolve(null)
+
+    const fetchUser = userIds.length
+      ? fetch(`/api/ratings/bulk?barberoUserIds=${encodeURI(userIds.join(','))}`).then(r => (r.ok ? r.json() : null))
+      : Promise.resolve(null)
+
+    Promise.all([fetchPerfil, fetchUser])
+      .then(([dataPerfil, dataUser]) => {
+        if (dataPerfil) {
+          const byPerfil: Record<number, { avg: number; count: number }> = {}
+          const mapPU: Record<number, number> = dataPerfil.mapPerfilToUser || {}
+          const items: Array<{ barberoUserId: number; avg: number; count: number }> = dataPerfil.items || []
+          const byUserTmp: Record<number, { avg: number; count: number }> = {}
+          for (const it of items) byUserTmp[it.barberoUserId] = { avg: Number(it.avg || 0), count: Number(it.count || 0) }
+          for (const [perfilIdStr, userId] of Object.entries(mapPU)) {
+            const perfilId = Number(perfilIdStr)
+            if (byUserTmp[userId]) byPerfil[perfilId] = byUserTmp[userId]
+          }
+          setRatingsAvailByPerfil(byPerfil)
+        } else {
+          setRatingsAvailByPerfil({})
+        }
+
+        if (dataUser) {
+          const itemsU: Array<{ barberoUserId: number; avg: number; count: number }> = dataUser.items || []
+          const byUser: Record<number, { avg: number; count: number }> = {}
+          for (const it of itemsU) byUser[it.barberoUserId] = { avg: Number(it.avg || 0), count: Number(it.count || 0) }
+          setRatingsAvailByUser(byUser)
+        } else {
+          setRatingsAvailByUser({})
+        }
+      })
+      .catch(() => {
+        setRatingsAvailByPerfil({})
+        setRatingsAvailByUser({})
+      })
+  }, [barberos])
+
+  // Paginación
   const [visible, setVisible] = useState(10)
   const list = useMemo(() => barberos.slice(0, visible), [barberos, visible])
   const canLoadMore = barberos.length > visible
+
+  // Fallback por-card (garantizado): obtenemos avg/count por userId de los visibles
+  useEffect(() => {
+    if (!list?.length) {
+      setRatingsPerCard({})
+      return
+    }
+    const userIdsVisible = Array.from(new Set(
+      list
+        .map((b: any) =>
+          b.usuarioId ??
+          b.userId ??
+          b.barberoUserId ??
+          b.user_id ??
+          b.barbero_id ??
+          b.barbero?.usuarioId ??
+          b.barbero?.id ??
+          b.ownerId ??
+          b.id
+        )
+        .filter((x: any) => Number.isFinite(Number(x)))
+        .map(Number)
+    ))
+
+    if (!userIdsVisible.length) {
+      setRatingsPerCard({})
+      return
+    }
+
+    // multipetición simple (1 por barbero visible)
+    Promise.all(
+      userIdsVisible.map(async (uid) => {
+        const r = await fetch(`/api/ratings?barberoUserId=${uid}`)
+        if (!r.ok) return [uid, null] as const
+        const j = await r.json()
+        // esperamos { avg: number, count?: number }
+        const avg = Number(j?.avg ?? 0)
+        const count = Number(j?.count ?? j?._count ?? 0)
+        return [uid, { avg, count }] as const
+      })
+    ).then((pairs) => {
+      const map: Record<number, { avg: number; count: number }> = {}
+      for (const [uid, obj] of pairs) {
+        if (obj) map[uid] = obj
+      }
+      setRatingsPerCard(map)
+    }).catch(() => setRatingsPerCard({}))
+  }, [list])
 
   // --- Próxima Cita ---
   const { data: proximas = [], isLoading: proxLoading } = useQuery<any[], Error>({
@@ -156,11 +320,9 @@ export default function ClienteDashboard() {
   })
   const proxima = proximas[0] || null
 
-  // Helpers navegación
   const goPerfil = (id: number) => router.push(`/barbero/${id}`)
   const goReservar = (id: number) => router.push(`/barbero/${id}?reserve=true`)
 
-  // Grilla contenida (no muy ancha)
   const sectionGridSx = {
     display: 'grid',
     gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))',
@@ -197,14 +359,19 @@ export default function ClienteDashboard() {
         <Box sx={sectionGridSx}>
           {favCards.map((f) => {
             const nombre = `${f.nombres} ${f.apellidos}`.trim()
+            const r = ratingsFav[f.id]?.avg ?? 0
+            const c = ratingsFav[f.id]?.count ?? 0
             return (
               <BarberCard
                 key={f.id}
                 id={f.id}
                 nombre={nombre}
-                rating={0}
+                rating={r}
+                count={c}
                 action="reservar"
                 onClick={goReservar}
+                debug={debug}
+                debugInfo={`perfil:${f.id}`}
               />
             )
           })}
@@ -232,14 +399,39 @@ export default function ClienteDashboard() {
                 b.nombre ||
                 `${b.nombres ?? ''} ${b.apellidos ?? ''}`.trim() ||
                 'Barbero'
+
+              const perfilId =
+                b.perfilId ?? b.perfil_id ?? b.id_perfil ?? b.barberoId ?? b.id
+
+              const userId =
+                b.usuarioId ??
+                b.userId ??
+                b.barberoUserId ??
+                b.user_id ??
+                b.barbero_id ??
+                b.barbero?.usuarioId ??
+                b.barbero?.id ??
+                b.ownerId ??
+                b.id
+
+              // prioridad: lote por perfilId -> lote por userId -> fallback por-card (userId) -> lo que venga del endpoint
+              const rPerfil = ratingsAvailByPerfil[Number(perfilId)]
+              const rUser   = ratingsAvailByUser[Number(userId)]
+              const rCard   = ratingsPerCard[Number(userId)]
+              const rating  = (rPerfil?.avg ?? rUser?.avg ?? rCard?.avg ?? b.avgRating ?? 0)
+              const count   = (rPerfil?.count ?? rUser?.count ?? rCard?.count ?? b.ratingCount ?? 0)
+
               return (
                 <BarberCard
-                  key={b.barberoId || b.id}
-                  id={b.barberoId || b.id}
+                  key={`${perfilId}-${userId}`}
+                  id={Number(perfilId)}
                   nombre={nombre}
-                  rating={b.avgRating ?? 0}
+                  rating={Number(rating) || 0}
+                  count={Number(count) || 0}
                   action="perfil"
                   onClick={goPerfil}
+                  debug={debug}
+                  debugInfo={`perfil:${perfilId} · user:${userId}`}
                 />
               )
             })}
@@ -249,11 +441,7 @@ export default function ClienteDashboard() {
             <Box sx={{ textAlign: 'center', mb: 4 }}>
               <Button
                 onClick={() => setVisible((v) => v + 10)}
-                sx={{
-                  textTransform: 'none',
-                  borderColor: theme.palette.primary.main,
-                  color: '#fff',
-                }}
+                sx={{ textTransform: 'none', borderColor: theme.palette.primary.main, color: '#fff' }}
                 variant="outlined"
               >
                 Ver más
@@ -263,7 +451,7 @@ export default function ClienteDashboard() {
         </>
       )}
 
-      {/* PRÓXIMAS CITAS (1 próxima) */}
+      {/* PRÓXIMAS CITAS */}
       <Typography variant="h6" sx={sectionTitleSx}>
         Próximas Citas
       </Typography>
