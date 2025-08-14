@@ -17,16 +17,9 @@ function toYMDLocal(d: Date) {
   const da = String(d.getDate()).padStart(2, '0')
   return `${y}-${m}-${da}`
 }
-const startOfDay = (d: Date) => {
-  const x = new Date(d); x.setHours(0, 0, 0, 0); return x
-}
-const endOfDay = (d: Date) => {
-  const x = new Date(d); x.setHours(23, 59, 59, 999); return x
-}
-const toMinutes = (hhmm: string) => {
-  const [h, m] = hhmm.split(':').map(Number)
-  return (h || 0) * 60 + (m || 0)
-}
+const startOfDay = (d: Date) => { const x = new Date(d); x.setHours(0, 0, 0, 0); return x }
+const endOfDay   = (d: Date) => { const x = new Date(d); x.setHours(23, 59, 59, 999); return x }
+const toMinutes = (hhmm: string) => { const [h, m] = hhmm.split(':').map(Number); return (h || 0) * 60 + (m || 0) }
 const fromMinutes = (mins: number) => {
   const h = String(Math.floor(mins / 60)).padStart(2, '0')
   const m = String(mins % 60).padStart(2, '0')
@@ -37,11 +30,12 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   if (req.method !== 'GET') return res.status(405).json({ error: 'Sólo GET' })
 
   try {
-    // Soporta:
-    // - barberoId (id de PerfilBarbero)  [requerido]
-    // - barberoUserId (id de Usuario del barbero) [opcional]
-    // - servicioId (para tomar su duración)      [requerido]
-    // - fecha YYYY-MM-DD                          [requerido]
+    // Requeridos:
+    // - barberoId (id de PerfilBarbero)
+    // - servicioId
+    // - fecha YYYY-MM-DD
+    // Opcional:
+    // - barberoUserId (id Usuario del barbero)
     const barberoPerfilId = Number(req.query.barberoId)
     const servicioId = Number(req.query.servicioId)
     const fechaStr = String(req.query.fecha || '') // YYYY-MM-DD
@@ -57,6 +51,16 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const targetDate = parseYMDLocal(fechaStr)
     if (isNaN(targetDate.getTime()))
       return res.status(400).json({ error: 'fecha inválida' })
+
+    // *** NUEVO: bloquear fechas pasadas (local) ***
+    const todayLocalStart = startOfDay(new Date())
+    if (targetDate < todayLocalStart) {
+      return res.status(200).json({
+        slots: [], disponibles: [], horas: [],
+        stepMin: 30, duracion: 0, // duracion 0 para no confundir
+        message: 'fecha en el pasado'
+      })
+    }
 
     // Servicio (duración y pertenencia)
     const servicio = await prisma.servicio.findUnique({
@@ -105,31 +109,27 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const p1 = hasPausa ? toMinutes(horario.pausaInicio as string) : null
     const p2 = hasPausa ? toMinutes(horario.pausaFin as string) : null
 
-    // Reservas del día (PENDING o CONFIRMED) del barbero (¡OJO!: aquí va el userId)
+    // Reservas del día (PENDING/CONFIRMED) del barbero (id de Usuario)
     const dayStart = startOfDay(targetDate)
     const dayEnd = endOfDay(targetDate)
     const reservas = await prisma.reserva.findMany({
       where: {
-        barberoId: barberoUserId!, // <- usuario del barbero
+        barberoId: barberoUserId!,
         fecha: { gte: dayStart, lte: dayEnd },
         estado: { in: ['PENDING', 'CONFIRMED'] },
       },
-      select: {
-        fecha: true,
-        hora: true,
-        servicio: { select: { duracion: true } },
-      },
+      select: { fecha: true, hora: true, servicio: { select: { duracion: true } } },
       orderBy: { fecha: 'asc' },
     })
 
-    // Intervalos ocupados [start, end) en minutos desde 00:00 del día
+    // Intervalos ocupados [start, end)
     const busy: Array<[number, number]> = reservas.map((r) => {
       const startMins = r.hora ? toMinutes(r.hora) : (r.fecha.getHours() * 60 + r.fecha.getMinutes())
       const dur = r.servicio?.duracion ?? duracion
       return [startMins, startMins + dur]
     })
 
-    // Generar slots cada 30' y que quepa la duración completa
+    // Generar slots disponibles
     const STEP = 30
     const now = new Date()
     const isToday = fechaStr === toYMDLocal(now)
@@ -139,11 +139,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       // respetar pausa
       if (hasPausa && p1 !== null && p2 !== null) {
         const slotEnd = s + duracion
-        // descarta si el bloque toca la pausa
         if (!(slotEnd <= p1 || s >= p2)) continue
       }
 
-      // si es hoy, descartar pasados
+      // hoy: omitir horas pasadas
       if (isToday) {
         const slotDate = new Date(targetDate.getTime())
         slotDate.setHours(Math.floor(s / 60), s % 60, 0, 0)
@@ -161,8 +160,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
     return res.status(200).json({
       slots: candidates,
-      disponibles: candidates, // alias para compatibilidad
-      horas: candidates,       // alias para compatibilidad
+      disponibles: candidates, // alias
+      horas: candidates,       // alias
       stepMin: STEP,
       duracion,
     })

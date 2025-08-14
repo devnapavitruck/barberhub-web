@@ -5,7 +5,6 @@ import nodemailer from 'nodemailer'
 import { reservationTemplate } from '@/utils/emailTemplates'
 import jwt from 'jsonwebtoken'
 
-// ---------------- helpers ----------------
 const transporter = nodemailer.createTransport({
   host: process.env.EMAIL_HOST!,
   port: Number(process.env.EMAIL_PORT!) || 587,
@@ -32,27 +31,22 @@ function getClienteId(req: NextApiRequest): number | null {
   return null
 }
 
-// YYYY-MM-DD -> Date anclada al MEDIODÍA UTC (evita corrimientos por zona horaria)
+// YYYY-MM-DD -> Date anclada al MEDIODÍA UTC (como ya veníamos guardando)
 function parseYmdToUTCNoon(ymd: string) {
   const [y, m, d] = ymd.split('-').map(Number)
   return new Date(Date.UTC(y, (m || 1) - 1, d || 1, 12, 0, 0, 0))
 }
-// límites de día en UTC: [start, next)
-function dayBoundsUTC(dateUTC: Date) {
-  const y = dateUTC.getUTCFullYear()
-  const m = dateUTC.getUTCMonth()
-  const d = dateUTC.getUTCDate()
-  const start = new Date(Date.UTC(y, m, d, 0, 0, 0, 0))
-  const next  = new Date(Date.UTC(y, m, d + 1, 0, 0, 0, 0))
-  return { start, next }
+
+// Versión local para comparar “pasado”
+function parseYMDLocal(ymd: string) {
+  const [y, m, d] = ymd.split('-').map(Number)
+  return new Date(y, (m || 1) - 1, d || 1, 0, 0, 0, 0)
 }
 
 const DIAS_UTC = ['Dom','Lun','Mar','Mié','Jue','Vie','Sáb'] as const
 const toMinutes = (hhmm: string) => { const [h, m] = hhmm.split(':').map(Number); return (h||0)*60 + (m||0) }
-// solape estricto: permite back-to-back (fin == inicio NO se considera choque)
-const overlap = (a1:number,a2:number,b1:number,b2:number) => a1 < b2 && b1 < a2
+const overlap = (a1:number,a2:number,b1:number,b2:number) => Math.max(a1,b1) < Math.min(a2,b2)
 
-// ---------------- handler ----------------
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   const clienteId = getClienteId(req)
   if (!clienteId) return res.status(401).json({ error: 'No autorizado' })
@@ -66,9 +60,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       const take = limit ? parseInt(limit, 10) : undefined
 
       const reservas = await prisma.reserva.findMany({
-        where,
-        take,
-        orderBy: [{ fecha: 'asc' }, { hora: 'asc' }],
+        where, take,
+        orderBy: { fecha: 'asc' },
         include: {
           barbero: {
             select: {
@@ -101,6 +94,14 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     }
 
     try {
+      // 0) Bloquear reservas en el pasado (comparación LOCAL)
+      const localTarget = parseYMDLocal(fecha)
+      const [hh, mm] = hora.split(':').map(Number)
+      localTarget.setHours(hh || 0, mm || 0, 0, 0)
+      if (localTarget.getTime() <= Date.now()) {
+        return res.status(409).json({ error: 'No puedes reservar en el pasado' })
+      }
+
       // 1) perfil -> usuario del barbero
       const perfil = await prisma.perfilBarbero.findUnique({
         where: { id: barberoId },
@@ -131,20 +132,30 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       }
       const start = toMinutes(hora)
       const end   = start + (svc.duracion || 30)
-      if (start < toMinutes(horario.inicio) || end > toMinutes(horario.fin)) {
+      const toMin = (hhmm: string) => { const [h, m] = hhmm.split(':').map(Number); return (h||0)*60 + (m||0) }
+      if (start < toMin(horario.inicio) || end > toMin(horario.fin)) {
         return res.status(409).json({ error: 'Hora fuera del horario de atención' })
       }
 
       // 4) solapes con reservas del barbero (PENDING/CONFIRMED) ese mismo día (UTC)
-      const { start: dayStart, next: dayNext } = dayBoundsUTC(fechaUTCNoon)
+      const { start: dayStart, end: dayEnd } = (() => {
+        const y = fechaUTCNoon.getUTCFullYear()
+        const m = fechaUTCNoon.getUTCMonth()
+        const d = fechaUTCNoon.getUTCDate()
+        return {
+          start: new Date(Date.UTC(y, m, d, 0, 0, 0, 0)),
+          end:   new Date(Date.UTC(y, m, d, 23, 59, 59, 999)),
+        }
+      })()
+
       const mismasFecha = await prisma.reserva.findMany({
         where: {
           barberoId: barberoUsuarioId,
-          fecha: { gte: dayStart, lt: dayNext }, // rango [start, next)
+          fecha: { gte: dayStart, lte: dayEnd },
           estado: { in: ['PENDING', 'CONFIRMED'] },
         },
         select: { hora: true, servicio: { select: { duracion: true } } },
-        orderBy: [{ fecha: 'asc' }, { hora: 'asc' }],
+        orderBy: { fecha: 'asc' },
       })
       for (const r of mismasFecha) {
         const rs = toMinutes(r.hora)
@@ -154,7 +165,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         }
       }
 
-      // 5) crear PENDING (fecha anclada al MEDIODÍA UTC)
+      // 5) crear PENDING
       const reserva = await prisma.reserva.create({
         data: {
           clienteId,
@@ -184,7 +195,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         },
       })
 
-      // 6) email (best-effort) — avisa al barbero
+      // 6) email al barbero (best-effort)
       try {
         const perfilCliente = reserva.cliente.clientePerfil!
         const barberia = reserva.barbero.barberoPerfil?.nombreBarberia || 'Tu barbero'
@@ -193,8 +204,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           barbero: barberia,
           servicio: reserva.servicio.nombre,
           fechaFormateada: reserva.fecha.toLocaleDateString('es-CL', {
-            weekday: 'long', day: 'numeric', month: 'long', year: 'numeric',
-            timeZone: 'America/Santiago', // << muestra la fecha correcta en CL
+            weekday: 'long', day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC',
           }),
           hora: reserva.hora,
           direccion: `${perfilCliente.region || ''} ${perfilCliente.comuna || ''} ${perfilCliente.ciudad || ''}`.trim(),

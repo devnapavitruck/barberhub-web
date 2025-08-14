@@ -22,6 +22,7 @@ import {
   Divider,
   ToggleButtonGroup,
   ToggleButton,
+  Tooltip,
 } from '@mui/material'
 import DashboardLayout from '@/components/DashboardLayout'
 import RefreshIcon from '@mui/icons-material/Refresh'
@@ -31,6 +32,7 @@ import CalendarMonthIcon from '@mui/icons-material/CalendarMonth'
 import AccessTimeIcon from '@mui/icons-material/AccessTime'
 import PersonIcon from '@mui/icons-material/Person'
 import MonetizationOnIcon from '@mui/icons-material/MonetizationOn'
+import CloseIcon from '@mui/icons-material/Close'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
 // ————————————————————————————————————————————————
@@ -48,8 +50,8 @@ type Periodo = 'DAY' | 'WEEK' | 'MONTH' | 'ALL'
 type ReservaItem = {
   id: number
   estado: EstadoReserva
-  fecha: string            // ISO o YYYY-MM-DD
-  hora: string             // HH:mm (si no existe, se deriva desde fecha)
+  fecha: string            // ISO con hora o "YYYY-MM-DD"
+  hora: string             // HH:mm
   completadaAt?: string | null
   servicio: { id: number; nombre: string; duracion: number; precio: number }
   cliente?: { id: number | null; nombres: string; apellidos: string }
@@ -57,12 +59,23 @@ type ReservaItem = {
 
 // Helpers
 const CLP = new Intl.NumberFormat('es-CL', { style: 'currency', currency: 'CLP' })
-const prettyDate = (isoOrYmd: string) =>
-  new Date(isoOrYmd).toLocaleDateString('es-CL', {
-    weekday: 'short',
-    day: '2-digit',
-    month: 'short',
-  }).replace('.', '')
+
+/** Evita desfase: toma "YYYY-MM-DD" y crea fecha LOCAL */
+function labelFromYMD(ymd: string) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(ymd)
+  if (!m) {
+    // fallback si viene ISO completo
+    return new Date(ymd)
+      .toLocaleDateString('es-CL', { weekday: 'short', day: '2-digit', month: 'short' })
+      .replace('.', '')
+  }
+  const y = Number(m[1]); const mo = Number(m[2]); const d = Number(m[3])
+  const local = new Date(y, mo - 1, d)
+  return local
+    .toLocaleDateString('es-CL', { weekday: 'short', day: '2-digit', month: 'short' })
+    .replace('.', '')
+}
+
 const estadoToChip = (v: EstadoReserva) => {
   const map: Record<EstadoReserva, { label: string; color: 'warning' | 'success' | 'error' }> = {
     PENDING: { label: 'Pendiente', color: 'warning' },
@@ -120,6 +133,12 @@ export default function ReservasBarberoPage() {
   const [tab, setTab] = React.useState<'ALL' | EstadoReserva>('ALL')
   const [periodo, setPeriodo] = React.useState<Periodo>('ALL')
 
+  // “Ocultar” tarjetas localmente
+  const [hidden, setHidden] = React.useState<Set<number>>(new Set())
+  const hideCard = (id: number) => setHidden(prev => {
+    const next = new Set(prev); next.add(id); return next
+  })
+
   // Paginación suave (10 en 10)
   const [visible, setVisible] = React.useState(10)
   React.useEffect(() => { setVisible(10) }, [tab, periodo]) // reset al cambiar filtros
@@ -148,9 +167,19 @@ export default function ReservasBarberoPage() {
     onError: (e: any) => setSnack({ open: true, msg: e?.message || 'Error al actualizar', sev: 'error' }),
   })
 
-  // Filtrado por período + ordenación + paginación
+  // Fecha de hoy (encabezado)
+  const todayLabel = React.useMemo(() => {
+    const d = new Date()
+    const dd = String(d.getDate()).padStart(2,'0')
+    const mm = String(d.getMonth()+1).padStart(2,'0')
+    const yyyy = d.getFullYear()
+    return `${dd}/${mm}/${yyyy}`
+  }, [])
+
+  // Filtrado por período + ordenación + paginación + ocultos
   const prepared = React.useMemo(() => {
-    const items = (data ?? []).filter((r) => {
+    const base = (data ?? []).filter(r => !hidden.has(r.id))
+    const filtered = base.filter((r) => {
       if (periodo === 'ALL') return true
       const d = new Date(r.fecha)
       if (periodo === 'DAY')   return d >= startOfToday() && d <= endOfToday()
@@ -160,7 +189,7 @@ export default function ReservasBarberoPage() {
     })
 
     // Ordena por fecha y hora asc
-    items.sort((a, b) => {
+    filtered.sort((a, b) => {
       const da = new Date(a.fecha).getTime()
       const db = new Date(b.fecha).getTime()
       if (da !== db) return da - db
@@ -168,34 +197,32 @@ export default function ReservasBarberoPage() {
     })
 
     // Paginación suave: 10,20,30...
-    const total = items.length
-    const limited = items.slice(0, visible)
+    const total = filtered.length
+    const limited = filtered.slice(0, visible)
 
-    // Reagrupar por fecha
+    // Reagrupar por fecha (clave "YYYY-MM-DD")
     const groups = limited.reduce<Record<string, ReservaItem[]>>((acc, r) => {
-      const key = r.fecha.slice(0, 10)
+      const key = (r.fecha || '').slice(0, 10)
+      if (!key) return acc
       ;(acc[key] ||= []).push(r)
       return acc
     }, {})
     const orderedKeys = Object.keys(groups).sort((a, b) => a.localeCompare(b))
 
     return { groups, orderedKeys, total }
-  }, [data, periodo, visible])
-
-  const ask = (id: number, next: EstadoReserva) => setConfirm({ open: true, id, next })
-  const doConfirm = () => {
-    if (confirm.id && confirm.next) mutation.mutate({ id: confirm.id, estado: confirm.next })
-    setConfirm({ open: false, id: null, next: null })
-  }
+  }, [data, periodo, visible, hidden])
 
   return (
     <DashboardLayout title="Reservas" role="BARBERO">
       <Container sx={{ py: 2 }}>
-        {/* Encabezado */}
+        {/* Encabezado: fecha de hoy + refrescar */}
         <Box display="flex" alignItems="center" justifyContent="space-between" mb={1}>
-          <Typography variant="h6" sx={{ fontWeight: 800 }}>
-            Reservas
-          </Typography>
+          <Box display="flex" alignItems="center" gap={1}>
+            <CalendarMonthIcon fontSize="small" />
+            <Typography variant="h6" sx={{ fontWeight: 800 }}>
+              {todayLabel}
+            </Typography>
+          </Box>
           <IconButton onClick={() => refetch()} aria-label="Refrescar" disabled={isFetching}>
             <RefreshIcon />
           </IconButton>
@@ -263,7 +290,7 @@ export default function ReservasBarberoPage() {
                   <Box display="flex" alignItems="center" gap={1} mb={1}>
                     <CalendarMonthIcon fontSize="small" />
                     <Typography variant="subtitle2" sx={{ fontWeight: 800, letterSpacing: 0.3 }}>
-                      {prettyDate(day)}
+                      {labelFromYMD(day)}
                     </Typography>
                   </Box>
 
@@ -277,7 +304,15 @@ export default function ReservasBarberoPage() {
                               <Typography variant="subtitle1" sx={{ fontWeight: 800 }}>
                                 {r.servicio.nombre}
                               </Typography>
-                              <Chip size="small" color={chip.color} label={chip.label} />
+
+                              <Stack direction="row" spacing={0.5} alignItems="center">
+                                <Chip size="small" color={chip.color} label={chip.label} />
+                                <Tooltip title="Ocultar tarjeta">
+                                  <IconButton size="small" onClick={() => hideCard(r.id)}>
+                                    <CloseIcon fontSize="small" />
+                                  </IconButton>
+                                </Tooltip>
+                              </Stack>
                             </Box>
 
                             <Stack direction="row" spacing={2} alignItems="center" sx={{ opacity: 0.95, mb: 1 }}>
@@ -376,7 +411,7 @@ export default function ReservasBarberoPage() {
               ¿Seguro que deseas {confirm.next === 'CONFIRMED' ? 'aceptar' : 'cancelar'} esta reserva?
             </Typography>
           </DialogContent>
-        <DialogActions>
+          <DialogActions>
             <Button onClick={() => setConfirm({ open: false, id: null, next: null })}>Volver</Button>
             <Button
               variant="contained"
