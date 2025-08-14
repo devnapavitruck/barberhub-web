@@ -1,3 +1,4 @@
+// src/pages/api/cliente/reservas.ts
 import type { NextApiRequest, NextApiResponse } from 'next'
 import prisma from '@/lib/prisma'
 import nodemailer from 'nodemailer'
@@ -31,22 +32,25 @@ function getClienteId(req: NextApiRequest): number | null {
   return null
 }
 
-// YYYY-MM-DD -> Date anclada al MEDIODÍA UTC
+// YYYY-MM-DD -> Date anclada al MEDIODÍA UTC (evita corrimientos por zona horaria)
 function parseYmdToUTCNoon(ymd: string) {
   const [y, m, d] = ymd.split('-').map(Number)
   return new Date(Date.UTC(y, (m || 1) - 1, d || 1, 12, 0, 0, 0))
 }
+// límites de día en UTC: [start, next)
 function dayBoundsUTC(dateUTC: Date) {
   const y = dateUTC.getUTCFullYear()
   const m = dateUTC.getUTCMonth()
   const d = dateUTC.getUTCDate()
   const start = new Date(Date.UTC(y, m, d, 0, 0, 0, 0))
-  const end   = new Date(Date.UTC(y, m, d, 23, 59, 59, 999))
-  return { start, end }
+  const next  = new Date(Date.UTC(y, m, d + 1, 0, 0, 0, 0))
+  return { start, next }
 }
+
 const DIAS_UTC = ['Dom','Lun','Mar','Mié','Jue','Vie','Sáb'] as const
 const toMinutes = (hhmm: string) => { const [h, m] = hhmm.split(':').map(Number); return (h||0)*60 + (m||0) }
-const overlap = (a1:number,a2:number,b1:number,b2:number) => Math.max(a1,b1) < Math.min(a2,b2)
+// solape estricto: permite back-to-back (fin == inicio NO se considera choque)
+const overlap = (a1:number,a2:number,b1:number,b2:number) => a1 < b2 && b1 < a2
 
 // ---------------- handler ----------------
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
@@ -62,8 +66,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       const take = limit ? parseInt(limit, 10) : undefined
 
       const reservas = await prisma.reserva.findMany({
-        where, take,
-        orderBy: { fecha: 'asc' },
+        where,
+        take,
+        orderBy: [{ fecha: 'asc' }, { hora: 'asc' }],
         include: {
           barbero: {
             select: {
@@ -131,15 +136,15 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       }
 
       // 4) solapes con reservas del barbero (PENDING/CONFIRMED) ese mismo día (UTC)
-      const { start: dayStart, end: dayEnd } = dayBoundsUTC(fechaUTCNoon)
+      const { start: dayStart, next: dayNext } = dayBoundsUTC(fechaUTCNoon)
       const mismasFecha = await prisma.reserva.findMany({
         where: {
           barberoId: barberoUsuarioId,
-          fecha: { gte: dayStart, lte: dayEnd },
+          fecha: { gte: dayStart, lt: dayNext }, // rango [start, next)
           estado: { in: ['PENDING', 'CONFIRMED'] },
         },
         select: { hora: true, servicio: { select: { duracion: true } } },
-        orderBy: { fecha: 'asc' },
+        orderBy: [{ fecha: 'asc' }, { hora: 'asc' }],
       })
       for (const r of mismasFecha) {
         const rs = toMinutes(r.hora)
@@ -188,7 +193,8 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
           barbero: barberia,
           servicio: reserva.servicio.nombre,
           fechaFormateada: reserva.fecha.toLocaleDateString('es-CL', {
-            weekday: 'long', day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC',
+            weekday: 'long', day: 'numeric', month: 'long', year: 'numeric',
+            timeZone: 'America/Santiago', // << muestra la fecha correcta en CL
           }),
           hora: reserva.hora,
           direccion: `${perfilCliente.region || ''} ${perfilCliente.comuna || ''} ${perfilCliente.ciudad || ''}`.trim(),
