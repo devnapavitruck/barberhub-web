@@ -1,4 +1,3 @@
-// src/hooks/useServiciosBarbero.ts
 import { useQuery } from '@tanstack/react-query'
 
 export interface Servicio {
@@ -21,5 +20,4 @@ export function useServiciosBarbero(barberoId: number) {
   })
 }
 
-// **Añade este default export** para que sea invocable sin error:
 export default useServiciosBarbero

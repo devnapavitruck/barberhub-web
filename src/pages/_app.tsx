@@ -1,18 +1,17 @@
 // src/pages/_app.tsx
+import '@fontsource/montserrat/400.css'
+import '@fontsource/montserrat/700.css'
+import '@fontsource/montserrat/800.css'
+import '@fontsource/montserrat/900.css'
 
-import '@fontsource/montserrat/400.css';
-import '@fontsource/montserrat/700.css';
-import '@fontsource/montserrat/800.css';
-import '@fontsource/montserrat/900.css';
-
-import * as React from 'react';
-import type { AppProps } from 'next/app';
-import { ThemeProvider, createTheme } from '@mui/material/styles';
-import CssBaseline from '@mui/material/CssBaseline';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import * as React from 'react'
+import type { AppProps } from 'next/app'
+import { ThemeProvider, createTheme } from '@mui/material/styles'
+import CssBaseline from '@mui/material/CssBaseline'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
 // Instanciamos el cliente de React Query
-const queryClient = new QueryClient();
+const queryClient = new QueryClient()
 
 const theme = createTheme({
   palette: {
@@ -41,7 +40,7 @@ const theme = createTheme({
       },
     },
   },
-});
+})
 
 export default function App({ Component, pageProps }: AppProps) {
   return (
@@ -51,5 +50,5 @@ export default function App({ Component, pageProps }: AppProps) {
         <Component {...pageProps} />
       </ThemeProvider>
     </QueryClientProvider>
-  );
+  )
 }
