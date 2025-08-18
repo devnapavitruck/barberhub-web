@@ -97,6 +97,24 @@ const startOfMonth = () => { const d = startOfToday(); d.setDate(1); return d }
 const endOfMonth   = () => { const d = startOfMonth(); d.setMonth(d.getMonth()+1); d.setDate(0); d.setHours(23,59,59,999); return d }
 
 // ————————————————————————————————————————————————
+// Persistencia de ocultos (localStorage)
+const HIDDEN_LS_KEY = 'bh:barbero:reservas:hidden'
+
+function loadHiddenFromLS(): Set<number> {
+  if (typeof window === 'undefined') return new Set()
+  try {
+    const raw = localStorage.getItem(HIDDEN_LS_KEY)
+    if (!raw) return new Set()
+    const arr = JSON.parse(raw) as number[]
+    return new Set(arr.filter((n) => Number.isFinite(n)))
+  } catch { return new Set() }
+}
+function saveHiddenToLS(set: Set<number>) {
+  if (typeof window === 'undefined') return
+  try { localStorage.setItem(HIDDEN_LS_KEY, JSON.stringify([...set])) } catch {}
+}
+
+// ————————————————————————————————————————————————
 // API client (token desde localStorage)
 function authHeaders() {
   const token = typeof window !== 'undefined' ? localStorage.getItem('token') : null
@@ -131,10 +149,17 @@ export default function ReservasBarberoPage() {
 
   // Filtros
   const [tab, setTab] = React.useState<'ALL' | EstadoReserva>('ALL')
-  const [periodo, setPeriodo] = React.useState<Periodo>('ALL')
+  // ▶ Predeterminar "HOY"
+  const [periodo, setPeriodo] = React.useState<Periodo>('DAY')
 
-  // “Ocultar” tarjetas localmente
+  // “Ocultar” tarjetas con persistencia
   const [hidden, setHidden] = React.useState<Set<number>>(new Set())
+  React.useEffect(() => {
+    setHidden(loadHiddenFromLS())
+  }, [])
+  React.useEffect(() => {
+    saveHiddenToLS(hidden)
+  }, [hidden])
   const hideCard = (id: number) => setHidden(prev => {
     const next = new Set(prev); next.add(id); return next
   })
@@ -188,12 +213,12 @@ export default function ReservasBarberoPage() {
       return true
     })
 
-    // Ordena por fecha y hora asc
+    // Ordena: fecha DESC (más reciente primero), hora ASC dentro del día
     filtered.sort((a, b) => {
       const da = new Date(a.fecha).getTime()
       const db = new Date(b.fecha).getTime()
-      if (da !== db) return da - db
-      return parseHHMM(a.hora) - parseHHMM(b.hora)
+      if (da !== db) return db - da               // fecha descendente
+      return parseHHMM(a.hora) - parseHHMM(b.hora) // hora ascendente
     })
 
     // Paginación suave: 10,20,30...
@@ -207,7 +232,8 @@ export default function ReservasBarberoPage() {
       ;(acc[key] ||= []).push(r)
       return acc
     }, {})
-    const orderedKeys = Object.keys(groups).sort((a, b) => a.localeCompare(b))
+    // ▶ Fechas más recientes primero
+    const orderedKeys = Object.keys(groups).sort((a, b) => b.localeCompare(a))
 
     return { groups, orderedKeys, total }
   }, [data, periodo, visible, hidden])

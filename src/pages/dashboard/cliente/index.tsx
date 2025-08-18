@@ -9,6 +9,7 @@ import {
   Button,
   CircularProgress,
   Rating,
+  Chip,
   useTheme,
 } from '@mui/material'
 import { useQuery } from '@tanstack/react-query'
@@ -30,6 +31,8 @@ function BarberCard({
   id, nombre, rating = 0, count = 0, action, onClick, debugInfo, debug,
 }: BarberCardProps) {
   const theme = useTheme()
+  const isNew = (count || 0) === 0
+
   return (
     <Card
       sx={{
@@ -61,7 +64,7 @@ function BarberCard({
           color: '#FFF',
           fontSize: 14,
           fontWeight: 800,
-          mb: 0.75,
+          mb: 0.5,
           display: '-webkit-box',
           WebkitLineClamp: 2,
           WebkitBoxOrient: 'vertical',
@@ -72,7 +75,7 @@ function BarberCard({
         {nombre}
       </Typography>
 
-      <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 0.5, mb: 1.25 }}>
+      <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 0.5, mb: 1 }}>
         <Rating
           value={rating}
           precision={0.5}
@@ -83,6 +86,7 @@ function BarberCard({
         <Typography variant="caption" sx={{ color: '#bbb' }}>
           ({count})
         </Typography>
+        {isNew && <Chip size="small" label="Nuevo" color="primary" sx={{ ml: 0.5 }} />}
       </Box>
 
       {debug && (
@@ -108,23 +112,26 @@ function BarberCard({
           Ver perfil
         </Button>
       ) : (
-        <Typography
-          role="button"
+        <Button
+          size="small"
+          variant="contained"
           onClick={() => onClick(id)}
-          sx={{
-            display: 'block',
-            mt: 0.25,
-            color: '#EEDB7C',
-            fontWeight: 700,
-            cursor: 'pointer',
-            userSelect: 'none',
-          }}
+          sx={{ display: 'block', mt: 0.25, mx: 'auto', textTransform: 'none', fontWeight: 800 }}
         >
           Reservar
-        </Typography>
+        </Button>
       )}
     </Card>
   )
+}
+
+function mergeFechaHora(fechaISO: string, hhmm?: string): Date {
+  const d = new Date(fechaISO)
+  if (hhmm) {
+    const [h, m] = hhmm.split(':').map((n) => parseInt(n, 10) || 0)
+    d.setHours(h, m, 0, 0)
+  }
+  return d
 }
 
 export default function ClienteDashboard() {
@@ -139,7 +146,6 @@ export default function ClienteDashboard() {
   const [ratingsFav, setRatingsFav] = useState<Record<number, { avg: number; count: number }>>({})
   const [ratingsAvailByPerfil, setRatingsAvailByPerfil] = useState<Record<number, { avg: number; count: number }>>({})
   const [ratingsAvailByUser, setRatingsAvailByUser] = useState<Record<number, { avg: number; count: number }>>({})
-  // Fallback per-card (por userId) para visibles
   const [ratingsPerCard, setRatingsPerCard] = useState<Record<number, { avg: number; count: number }>>({})
 
   // Ratings Favoritos por perfilId (lote)
@@ -260,7 +266,7 @@ export default function ClienteDashboard() {
   const list = useMemo(() => barberos.slice(0, visible), [barberos, visible])
   const canLoadMore = barberos.length > visible
 
-  // Fallback por-card (garantizado): obtenemos avg/count por userId de los visibles
+  // Fallback per-card (garantizado): avg/count por userId de los visibles
   useEffect(() => {
     if (!list?.length) {
       setRatingsPerCard({})
@@ -288,13 +294,11 @@ export default function ClienteDashboard() {
       return
     }
 
-    // multipetición simple (1 por barbero visible)
     Promise.all(
       userIdsVisible.map(async (uid) => {
         const r = await fetch(`/api/ratings?barberoUserId=${uid}`)
         if (!r.ok) return [uid, null] as const
         const j = await r.json()
-        // esperamos { avg: number, count?: number }
         const avg = Number(j?.avg ?? 0)
         const count = Number(j?.count ?? j?._count ?? 0)
         return [uid, { avg, count }] as const
@@ -308,17 +312,42 @@ export default function ClienteDashboard() {
     }).catch(() => setRatingsPerCard({}))
   }, [list])
 
-  // --- Próxima Cita ---
-  const { data: proximas = [], isLoading: proxLoading } = useQuery<any[], Error>({
-    queryKey: ['proximaCita'],
+  // --- Próximas Citas (solo FUTURAS: PENDING + CONFIRMED) ---
+  const { data: pend = [], isLoading: pendLoading } = useQuery<any[], Error>({
+    queryKey: ['reservasClientePending'],
     queryFn: async () => {
-      const res = await fetch('/api/cliente/reservas?status=PENDING&limit=1')
-      if (!res.ok) throw new Error('Error cargando próxima cita')
+      const res = await fetch('/api/cliente/reservas?status=PENDING')
+      if (!res.ok) throw new Error('Error cargando reservas pendientes')
       return res.json()
     },
     staleTime: 30_000,
   })
-  const proxima = proximas[0] || null
+  const { data: conf = [], isLoading: confLoading } = useQuery<any[], Error>({
+    queryKey: ['reservasClienteConfirmed'],
+    queryFn: async () => {
+      const res = await fetch('/api/cliente/reservas?status=CONFIRMED')
+      if (!res.ok) throw new Error('Error cargando reservas confirmadas')
+      return res.json()
+    },
+    staleTime: 30_000,
+  })
+
+  const now = new Date()
+  const proxima = useMemo(() => {
+    const all = [...(pend || []), ...(conf || [])]
+    const fut = all.filter((r: any) => {
+      const d = mergeFechaHora(r.fecha, r.hora)
+      return d.getTime() >= now.getTime() && r.estado !== 'CANCELLED'
+    })
+    fut.sort((a: any, b: any) => {
+      const da = mergeFechaHora(a.fecha, a.hora).getTime()
+      const db = mergeFechaHora(b.fecha, b.hora).getTime()
+      return da - db
+    })
+    return fut[0] || null
+  }, [pend, conf])
+
+  const isProxLoading = pendLoading || confLoading
 
   const goPerfil = (id: number) => router.push(`/barbero/${id}`)
   const goReservar = (id: number) => router.push(`/barbero/${id}?reserve=true`)
@@ -414,7 +443,7 @@ export default function ClienteDashboard() {
                 b.ownerId ??
                 b.id
 
-              // prioridad: lote por perfilId -> lote por userId -> fallback por-card (userId) -> lo que venga del endpoint
+              // prioridad: lote por perfilId -> lote por userId -> fallback per-card -> lo que venga del endpoint
               const rPerfil = ratingsAvailByPerfil[Number(perfilId)]
               const rUser   = ratingsAvailByUser[Number(userId)]
               const rCard   = ratingsPerCard[Number(userId)]
@@ -451,12 +480,12 @@ export default function ClienteDashboard() {
         </>
       )}
 
-      {/* PRÓXIMAS CITAS */}
+      {/* PRÓXIMAS CITAS (sólo futuras) */}
       <Typography variant="h6" sx={sectionTitleSx}>
         Próximas Citas
       </Typography>
 
-      {proxLoading ? (
+      {isProxLoading ? (
         <Box sx={{ textAlign: 'center', mb: 10 }}>
           <CircularProgress color="inherit" />
         </Box>
@@ -474,7 +503,7 @@ export default function ClienteDashboard() {
           }}
         >
           <Typography sx={{ color: '#FFF', fontWeight: 900 }}>
-            {new Date(proxima.fecha).toLocaleDateString('es-CL')} · {proxima.hora}
+            {mergeFechaHora(proxima.fecha, proxima.hora).toLocaleString('es-CL', { dateStyle: 'short', timeStyle: 'short' })}
           </Typography>
 
           <Typography sx={{ color: '#FFF', mt: 0.75 }}>
@@ -489,11 +518,7 @@ export default function ClienteDashboard() {
                 const nombre = `${perfil.nombres ?? ''} ${perfil.apellidos ?? ''}`.trim()
                 return nombre || perfil.nombreBarberia || '—'
               }
-              return (
-                proxima.barbero?.nombreBarberia ||
-                proxima.barbero?.nombre ||
-                '—'
-              )
+              return proxima.barbero?.nombreBarberia || proxima.barbero?.nombre || '—'
             })()}
           </Typography>
         </Card>
